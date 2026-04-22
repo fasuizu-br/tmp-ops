@@ -1,0 +1,47 @@
+name: Unban IP on Latitude
+
+on:
+  workflow_dispatch:
+    inputs:
+      ip:
+        description: 'IP to unban from fail2ban sshd jail'
+        required: true
+        default: '179.212.109.228'
+
+jobs:
+  unban:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.LATITUDE_SSH_KEY }}
+          SSH_HOST: ${{ vars.LATITUDE_HOST || '69.67.151.105' }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+      - name: Unban and whitelist
+        env:
+          SSH_HOST: ${{ vars.LATITUDE_HOST || '69.67.151.105' }}
+          IP_TO_UNBAN: ${{ inputs.ip }}
+        run: |
+          echo "::group::status-before"
+          ssh -i ~/.ssh/deploy_key ubuntu@"$SSH_HOST" "sudo fail2ban-client status sshd 2>&1 | head -20"
+          echo "::endgroup::"
+          echo "::group::unban"
+          ssh -i ~/.ssh/deploy_key ubuntu@"$SSH_HOST" "sudo fail2ban-client set sshd unbanip $IP_TO_UNBAN 2>&1 || true"
+          echo "::endgroup::"
+          echo "::group::whitelist"
+          ssh -i ~/.ssh/deploy_key ubuntu@"$SSH_HOST" bash -s <<EOS
+          set -eu
+          LOCAL=/etc/fail2ban/jail.d/99-ignoreip-runtime.local
+          if ! sudo grep -q "$IP_TO_UNBAN" \$LOCAL 2>/dev/null; then
+            echo "[DEFAULT]" | sudo tee \$LOCAL >/dev/null
+            echo "ignoreip = 127.0.0.1/8 ::1 $IP_TO_UNBAN" | sudo tee -a \$LOCAL >/dev/null
+          fi
+          sudo systemctl reload fail2ban 2>&1 || sudo systemctl restart fail2ban 2>&1
+          sudo fail2ban-client status sshd | head -20
+          EOS
+          echo "::endgroup::"
