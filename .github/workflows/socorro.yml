@@ -17,8 +17,15 @@ jobs:
         run: |
           mkdir -p ~/.ssh && printf '%s\n' "${{ secrets.LATITUDE_SSH_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -H 69.67.151.105 >> ~/.ssh/known_hosts 2>/dev/null
+          ssh-keyscan -T 15 -H 69.67.151.105 >> ~/.ssh/known_hosts 2>&1 || echo 'keyscan falhou'
+      - name: alcance
+        run: |
+          echo '-- portas vistas do runner:'
+          for p in 22 80 443 12345; do (echo > /dev/tcp/69.67.151.105/$p) >/dev/null 2>&1 && echo "porta $p ABERTA" || echo "porta $p fechada/sem resposta"; done
+          nc -z -w 8 -v 69.67.151.105 22 2>&1 | tail -1 || true
+          ping -c 2 -W 3 69.67.151.105 2>&1 | tail -2 || true
       - name: diagnostico
+        continue-on-error: true
         run: |
           ssh -o StrictHostKeyChecking=no -o ConnectTimeout=25 ubuntu@69.67.151.105 '
             echo "=== UPTIME/LOAD"; uptime
