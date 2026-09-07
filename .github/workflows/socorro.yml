@@ -1,0 +1,49 @@
+name: socorro
+on:
+  workflow_dispatch:
+    inputs:
+      ip:
+        description: IP a desbloquear
+        required: true
+      acao:
+        description: diagnostico | reparo
+        required: true
+        default: diagnostico
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: chave
+        run: |
+          mkdir -p ~/.ssh && printf '%s\n' "${{ secrets.LATITUDE_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 69.67.151.105 >> ~/.ssh/known_hosts 2>/dev/null
+      - name: diagnostico
+        run: |
+          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=25 ubuntu@69.67.151.105 '
+            echo "=== UPTIME/LOAD"; uptime
+            echo "=== MEM"; free -h
+            echo "=== DISCO"; df -h / /data /backup | tail -4
+            echo "=== FAIL2BAN"; sudo fail2ban-client status 2>/dev/null | head -5; for j in $(sudo fail2ban-client status 2>/dev/null | sed -n "s/.*Jail list:\s*//p" | tr "," " "); do echo "-- $j"; sudo fail2ban-client status $j 2>/dev/null | grep -iE "banned|total"; done
+            echo "=== IP BANIDO?"; sudo iptables -S 2>/dev/null | grep -c "'"${{ github.event.inputs.ip }}"'" || true
+            echo "=== CADDY"; systemctl is-active caddy; sudo ss -lntp 2>/dev/null | grep -E ":(80|443) " | head -4
+            echo "=== DOCKER"; systemctl is-active docker; sudo docker ps -q 2>/dev/null | wc -l; sudo docker ps -a --filter status=exited --format "{{.Names}} {{.Status}}" 2>/dev/null | head -10
+            echo "=== FALHAS"; systemctl --failed --no-legend | head -10
+            echo "=== OOM/ERROS RECENTES"; sudo journalctl --since "3 hours ago" -p err --no-pager 2>/dev/null | tail -25
+            echo "=== BACKUP"; systemctl is-active jurai-basebackup.service; sudo tail -3 /var/log/jurai/basebackup.log 2>/dev/null
+          '
+      - name: reparo
+        if: ${{ github.event.inputs.acao == 'reparo' }}
+        run: |
+          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=25 ubuntu@69.67.151.105 '
+            IP='"${{ github.event.inputs.ip }}"'
+            for j in $(sudo fail2ban-client status 2>/dev/null | sed -n "s/.*Jail list:\s*//p" | tr "," " "); do sudo fail2ban-client set $j unbanip $IP 2>/dev/null; done
+            sudo iptables -S 2>/dev/null | grep "$IP" | sed "s/^-A /-D /" | while read -r r; do sudo iptables $r 2>/dev/null; done
+            sudo fail2ban-client set sshd addignoreip $IP 2>/dev/null || true
+            echo "-- desbloqueio feito para $IP"
+            systemctl is-active caddy || sudo systemctl restart caddy
+            systemctl is-active docker || sudo systemctl restart docker
+            sleep 5
+            echo "-- caddy: $(systemctl is-active caddy) | docker: $(systemctl is-active docker) | containers: $(sudo docker ps -q | wc -l)"
+            curl -s -o /dev/null -w "local 443: %{http_code}\n" -k https://127.0.0.1/ 2>/dev/null || true
+          '
